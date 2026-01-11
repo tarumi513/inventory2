@@ -8,7 +8,15 @@ from datetime import datetime, timedelta
 # ★注意: スプレッドシートの名前が合っているか確認してください
 SHEET_NAME = "inventory" 
 # 認証用ファイル名
-JSON_FILE = "secret.json"
+# ▼ ここからコピー ▼
+from google.oauth2 import service_account
+import json
+
+# StreamlitのSecretsから鍵情報を読み込む
+key_dict = dict(st.secrets["gcp_service_account"])
+creds = service_account.Credentials.from_service_account_info(key_dict)
+gc = gspread.authorize(creds)
+# ▲ ここまでコピー ▲
 # 簡易パスワード
 LOGIN_PASSWORD = "1234"
 
