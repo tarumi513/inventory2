@@ -14,6 +14,7 @@ import json
 
 # StreamlitのSecretsから鍵情報を読み込む
 key_dict = dict(st.secrets["gcp_service_account"])
+key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 creds = service_account.Credentials.from_service_account_info(key_dict)
 gc = gspread.authorize(creds)
 # ▲ ここまでコピー ▲
