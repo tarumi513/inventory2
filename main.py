@@ -24,12 +24,25 @@ LOGIN_PASSWORD = "1234"
 # --- 認証と接続 ---
 def get_gspread_client():
     try:
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, scope)
-        client = gspread.authorize(creds)
-        return client
+        # 1. Secretsから認証情報を辞書として取り出す
+        key_dict = dict(st.secrets["gcp_service_account"])
+
+        # 2. 鍵の改行コード（\n）を正しく変換する
+        if "private_key" in key_dict:
+            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+
+        # 3. 認証の範囲を設定
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+
+        # 4. 認証を行ってクライアントを返す
+        creds = service_account.Credentials.from_service_account_info(key_dict, scopes=scopes)
+        return gspread.authorize(creds)
+
     except Exception as e:
-        st.error(f"認証エラー:  Secrets情報の読み込みに失敗しました。\n{e}")
+        st.error(f"認証エラー: 設定の読み込みに失敗しました。\n{e}")
         return None
 
 # --- データ取得 ---
