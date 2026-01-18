@@ -29,7 +29,7 @@ def get_gspread_client():
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.error(f"認証エラー: {JSON_FILE} の読み込みに失敗しました。\n{e}")
+        st.error(f"認証エラー:  Secrets情報の読み込みに失敗しました。\n{e}")
         return None
 
 # --- データ取得 ---
