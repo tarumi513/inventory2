@@ -110,127 +110,63 @@ if df is not None:
     if mode == "在庫入力 (メンバー)":
         st.title("📦 在庫管理")
         
-        if df.empty:
-            st.info("まだデータがありません。「管理者」メニューから商品を登録してください。")
-        else:
-            # ジャンルフィルタ
-            if "ジャンル" in df.columns:
-                genres = ["すべて"] + list(df["ジャンル"].unique())
-                selected_genre = st.selectbox("ジャンルで絞り込み", genres)
-                view_df = df if selected_genre == "すべて" else df[df["ジャンル"] == selected_genre]
-            else:
-                view_df = df
+     # --- アプリの表示部分 ---
+st.title("在庫管理アプリ")
 
-            # カード形式で表示
-            for index, row in view_df.iterrows():
-                with st.container():
-                    st.markdown("---")
-                    col1, col2 = st.columns([3, 2])
-                    
-                    # 左側：商品情報
-                    with col1:
-                        st.subheader(row.get("品名", "名称不明"))
-                        st.caption(f"ジャンル: {row.get('ジャンル', '-')}")
-                        
-                        current_stock = int(row.get("現在在庫数", 0))
-                        required_stock = int(row.get("必要在庫数", 0))
-                        
-                        if current_stock < required_stock:
-                            st.error(f"⚠️ 在庫不足! (あと {required_stock - current_stock} 個必要)")
-                        else:
-                            st.success("在庫あり")
+# データの読み込み
+df, sheet = load_data()
 
-                    # 右側：操作パネル
-                    with col2:
-                        st.metric("現在在庫", f"{current_stock} 個")
-                        
-                        # 数値入力ボックス
-                        amount = st.number_input(
-                            "数量", 
-                            min_value=1, 
-                            value=1, 
-                            step=1, 
-                            key=f"amount_{index}", 
-                            label_visibility="collapsed"
-                        )
+# --- サイドバー：管理者ログイン ---
+st.sidebar.title("メニュー")
+is_admin = False # 最初は管理者じゃない状態
 
-                        b_col1, b_col2 = st.columns(2)
-                        with b_col1:
-                            # 出庫ボタン
-                            if st.button(f"使った\n(-{amount})", key=f"minus_{index}"):
-                                new_val = max(0, current_stock - amount)
-                                update_stock(sheet, index, new_val)
-                                st.rerun()
-                        with b_col2:
-                            # 入庫ボタン
-                            if st.button(f"入荷\n(+{amount})", key=f"plus_{index}"):
-                                new_val = current_stock + amount
-                                update_stock(sheet, index, new_val)
-                                st.rerun()
+# 管理者モードのチェックボックス
+if st.sidebar.checkbox("管理者モード（編集する）"):
+    password = st.sidebar.text_input("管理者パスワード", type="password")
+    if password == st.secrets["admin_password"]:
+        st.sidebar.success("ログイン成功！編集できます")
+        is_admin = True # パスワードが合っていたら管理者フラグON
+    elif password:
+        st.sidebar.error("パスワードが違います")
 
-    # === 管理者モード ===
-    # === 管理者モード ===
-    elif mode == "商品登録・設定 (管理者)":
-        st.title("🛠 管理画面")
+# --- メイン画面：在庫一覧（全員が見れる） ---
+st.subheader("現在の在庫一覧")
+st.dataframe(df)
 
-        st.markdown("### ➕ 新しい商品の登録")
-        with st.form("add_form"):
-            col_a, col_b = st.columns(2)
-            with col_a:
-                new_genre = st.text_input("ジャンル (例: 文房具)")
-                new_name = st.text_input("商品名 (例: ボールペン)")
-                new_interval = st.number_input("発注間隔(日)", value=30, step=1)
-            
-            with col_b:
-                new_current = st.number_input("現在の在庫数", min_value=0, value=10)
-                new_last_date = st.date_input("最終発注日", datetime.now())
-                
-                # --- ★ここを変更しました★ ---
-                st.markdown("---")
-                st.caption("📦 必要在庫数の自動計算")
-                daily_usage = st.number_input("1日の使用量", min_value=0.0, value=1.0, step=0.1, format="%.1f")
-                lead_time = st.number_input("発注〜入荷までの日数", min_value=0, value=3, step=1)
-                
-                # ここで計算してしまう
-                # ceilを使って切り上げたい場合は import math が必要ですが、今回は単純な掛け算にします
-                # 計算結果を整数(int)にしておく
-                new_required = int(daily_usage * lead_time)
-                
-                st.info(f"計算結果: 必要在庫数は **{new_required}個** として登録されます。")
-                # -----------------------------
-            
-            submitted = st.form_submit_button("商品を登録する")
-            
-            if submitted:
-                if new_name and new_genre:
-                    # 計算済みの new_required を渡して登録
-                    if add_new_item(sheet, new_genre, new_name, new_current, new_required, new_last_date, new_interval):
-                        st.rerun()
-                else:
-                    st.warning("ジャンルと商品名は必須です")
+# --- 管理者専用エリア（is_adminがTrueのときだけ表示） ---
+if is_admin:
+    st.markdown("---")
+    st.subheader("🔧 在庫の編集（管理者のみ）")
 
-        st.markdown("---")
-        # ...（以下、一覧表示のコードはそのまま）
+    # 1. 新規追加フォーム
+    with st.form(key='add_form'):
+        name = st.text_input("商品名")
+        quantity = st.number_input("個数", min_value=0, step=1)
+        submit_btn = st.form_submit_button("追加")
         
-        # --- ここに追加しました: ジャンル絞り込み機能 ---
-        if not df.empty and "ジャンル" in df.columns:
-            # 管理者用のジャンルリスト作成
-            admin_genres = ["すべて"] + list(df["ジャンル"].unique())
-            # keyを指定して、メンバー側のボックスと区別します
-            admin_selected_genre = st.selectbox("表示するジャンルを選択", admin_genres, key="admin_genre_filter")
-            
-            # フィルタリング実行
-            if admin_selected_genre == "すべて":
-                admin_view_df = df
+        if submit_btn:
+            if name:
+                new_row = [name, quantity]
+                sheet.append_row(new_row)
+                st.success(f"「{name}」を追加しました！")
+                time.sleep(1)
+                st.rerun()
             else:
-                admin_view_df = df[df["ジャンル"] == admin_selected_genre]
-            
-            # 絞り込んだ結果を表示
-            st.dataframe(admin_view_df)
-        else:
-            # データがない、またはジャンル列がない場合はそのまま表示
-            st.dataframe(df)
+                st.warning("商品名を入力してください")
 
-        if st.button("ログアウト"):
-            st.session_state['logged_in'] = False
+    # 2. 削除フォーム
+    st.markdown("---")
+    delete_target = st.selectbox("削除する商品を選択", df["商品名"].unique())
+    if st.button("削除"):
+        try:
+            cell = sheet.find(delete_target)
+            sheet.delete_rows(cell.row)
+            st.success(f"「{delete_target}」を削除しました")
+            time.sleep(1)
             st.rerun()
+        except Exception as e:
+            st.error(f"エラーが発生しました: {e}")
+
+else:
+    # 管理者じゃない人に表示するメッセージ
+    st.info("※ 在庫の追加・削除を行う場合は、左のサイドバーから「管理者モード」にチェックを入れてください。")
