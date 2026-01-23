@@ -26,15 +26,31 @@ def load_data():
         sheet = client.open("inventory_data").sheet1 
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
-        # 空欄（NaN）があるとエラーになることがあるので、空文字で埋める
-        df = df.fillna("")
-        # もし「ジャンル」列がまだない場合のために、強制的に作る
+        
+        # エラー防止：もし列が足りなければ強制的に作る
         if "ジャンル" not in df.columns:
             df["ジャンル"] = "未分類"
+        if "必要在庫数" not in df.columns:
+            df["必要在庫数"] = 0 # 初期値は0
+
+        # 数字として扱うために変換（空欄は0にする）
+        df["個数"] = pd.to_numeric(df["個数"], errors='coerce').fillna(0)
+        df["必要在庫数"] = pd.to_numeric(df["必要在庫数"], errors='coerce').fillna(0)
+        
         return df, sheet
     except Exception as e:
         st.error(f"シートの読み込みエラー: {e}")
         return pd.DataFrame(), None
+
+# --- 赤字にするためのスタイル関数 ---
+def highlight_low_stock(row):
+    # 現在の数が、必要な数より少なかったら
+    if row["個数"] < row["必要在庫数"]:
+        # その行の文字色を赤にする
+        return ['color: red; font-weight: bold'] * len(row)
+    else:
+        # それ以外は普通の色
+        return [''] * len(row)
 
 # --- アプリのメイン処理 ---
 st.title("📦 在庫管理アプリ")
@@ -43,17 +59,14 @@ st.title("📦 在庫管理アプリ")
 df, sheet = load_data()
 
 # ---------------------------------------------------------
-# サイドバー設定（ジャンル絞り込み ＆ ログイン）
+# サイドバー設定
 # ---------------------------------------------------------
 st.sidebar.title("メニュー")
 
-# 1. ジャンルで絞り込み機能
 st.sidebar.subheader("🔍 表示切り替え")
-# データからジャンルの一覧（重複なし）を取得
 all_genres = ["すべて"] + list(df["ジャンル"].unique())
 selected_genre = st.sidebar.selectbox("ジャンルを選択", all_genres)
 
-# 2. 管理者ログイン機能
 st.sidebar.markdown("---")
 is_admin = False
 if st.sidebar.checkbox("管理者モード（編集）"):
@@ -65,21 +78,21 @@ if st.sidebar.checkbox("管理者モード（編集）"):
         st.sidebar.error("パスワードが違います")
 
 # ---------------------------------------------------------
-# メイン画面：在庫一覧
+# メイン画面：在庫一覧（赤字チェック付き）
 # ---------------------------------------------------------
-# ジャンルでデータをフィルタリングする
+# 1. まずジャンルで絞り込む
 if selected_genre == "すべて":
     df_display = df
 else:
     df_display = df[df["ジャンル"] == selected_genre]
 
-st.info("在庫数の変更は下のフォームから誰でも行えます。")
+st.info("※ 在庫が足りない（必要数を下回った）商品は、自動的に赤字で表示されます。")
 
-# フィルタリングされた表を表示
-st.dataframe(df_display)
+# 2. ここでスタイル（赤字）を適用して表示！
+st.dataframe(df_display.style.apply(highlight_low_stock, axis=1))
 
 # ---------------------------------------------------------
-# 入出庫エリア（誰でも操作OK）
+# 入出庫エリア
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📝 在庫数の更新")
@@ -88,7 +101,6 @@ if not df.empty:
     with st.form(key='update_stock_form'):
         col1, col2 = st.columns(2)
         with col1:
-            # 絞り込まれたリストの中から商品を選ぶ
             target_name = st.selectbox("商品を選択", df_display["商品名"].unique())
         with col2:
             new_quantity = st.number_input("現在の在庫数", min_value=0, step=1)
@@ -117,23 +129,28 @@ if is_admin:
     
     tab1, tab2 = st.tabs(["商品の追加", "商品の削除"])
 
-    # 【追加機能】ジャンルも入力できるように変更
+    # 【追加機能】必要在庫数も入力できるように変更
     with tab1:
         with st.form(key='add_form'):
             col_a, col_b = st.columns(2)
             with col_a:
                 name = st.text_input("商品名")
             with col_b:
-                # 既存のジャンルから選ぶか、手入力するか
                 genre = st.text_input("ジャンル（例: レジン）")
             
-            quantity = st.number_input("初期在庫数", min_value=0, step=1)
+            # 数値入力エリア
+            col_c, col_d = st.columns(2)
+            with col_c:
+                quantity = st.number_input("初期在庫数", min_value=0, step=1)
+            with col_d:
+                required = st.number_input("必要在庫数（これ以下で赤字）", min_value=0, step=1)
+            
             submit_btn = st.form_submit_button("追加する")
             
             if submit_btn:
                 if name and genre:
-                    # シートの末尾に [商品名, 個数, ジャンル] を追加
-                    sheet.append_row([name, quantity, genre])
+                    # シートの末尾に [商品名, 個数, ジャンル, 必要在庫数] を追加
+                    sheet.append_row([name, quantity, genre, required])
                     st.success(f"「{name}」を追加しました！")
                     time.sleep(1)
                     st.rerun()
