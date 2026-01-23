@@ -3,6 +3,7 @@ import pandas as pd
 import gspread
 from google.oauth2 import service_account
 import time
+from datetime import datetime, timedelta
 
 # --- 認証の設定関数 ---
 def get_gspread_client():
@@ -21,48 +22,56 @@ def get_gspread_client():
 def load_data():
     client = get_gspread_client()
     if not client:
-        return pd.DataFrame(), None
+        return pd.DataFrame(), None, None
     try:
+        # メインシートを開く
         sheet = client.open("inventory_data").sheet1 
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # 列が存在しない場合の保険
-        if "ジャンル" not in df.columns:
-            df["ジャンル"] = "未分類"
-        if "必要在庫数" not in df.columns:
-            df["必要在庫数"] = 0
+        # ログシートを開く（なければエラーになるのでtryで囲む）
+        try:
+            log_sheet = client.open("inventory_data").worksheet("log")
+        except:
+            st.error("スプレッドシートに 'log' という名前のシートを作成してください！")
+            return pd.DataFrame(), None, None
 
-        # 数値変換（計算できるようにする）
-        df["個数"] = pd.to_numeric(df["個数"], errors='coerce').fillna(0)
-        df["必要在庫数"] = pd.to_numeric(df["必要在庫数"], errors='coerce').fillna(0)
+        # 列不足の保険
+        if "ジャンル" not in df.columns: df["ジャンル"] = "未分類"
+        if "必要在庫数" not in df.columns: df["必要在庫数"] = 0
+        if "月間使用量" not in df.columns: df["月間使用量"] = 0 # 新機能
+
+        # 数値変換
+        cols = ["個数", "必要在庫数", "月間使用量"]
+        for c in cols:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
         
-        return df, sheet
+        return df, sheet, log_sheet
     except Exception as e:
         st.error(f"シートの読み込みエラー: {e}")
-        return pd.DataFrame(), None
+        return pd.DataFrame(), None, None
 
-# --- ★ここが重要：色分けのルール関数 ---
+# --- 色分けルール ---
 def highlight_stock_status(row):
-    # 1. 不足している場合（赤色）
     if row["個数"] < row["必要在庫数"]:
         return ['color: red; font-weight: bold'] * len(row)
-    
-    # 2. 過剰在庫の場合（青色）：必要数の2倍以上
-    # ※ただし、個数が0の場合は青くしないようにする（0個なのに過剰はおかしいため）
     elif row["個数"] > 0 and row["個数"] >= (row["必要在庫数"] * 2):
-        # 見やすい青色（DodgerBlue）を指定
         return ['color: #1E90FF; font-weight: bold'] * len(row)
-    
-    # 3. それ以外（普通）
     else:
         return [''] * len(row)
+
+# --- ログ記録関数 ---
+def add_log(log_sheet, item_name, change_amount, action_type):
+    # 日本時間（簡易的）
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # logシートの末尾に追加
+    log_sheet.append_row([now, item_name, change_amount, action_type])
 
 # --- アプリのメイン処理 ---
 st.title("📦 在庫管理アプリ")
 
-# データを読み込む
-df, sheet = load_data()
+# データを読み込む（log_sheetも取得）
+df, sheet, log_sheet = load_data()
 
 # ---------------------------------------------------------
 # サイドバー設定
@@ -70,8 +79,11 @@ df, sheet = load_data()
 st.sidebar.title("メニュー")
 
 st.sidebar.subheader("🔍 表示切り替え")
-all_genres = ["すべて"] + list(df["ジャンル"].unique())
-selected_genre = st.sidebar.selectbox("ジャンルを選択", all_genres)
+if not df.empty:
+    all_genres = ["すべて"] + list(df["ジャンル"].unique())
+    selected_genre = st.sidebar.selectbox("ジャンルを選択", all_genres)
+else:
+    selected_genre = "すべて"
 
 st.sidebar.markdown("---")
 is_admin = False
@@ -86,24 +98,22 @@ if st.sidebar.checkbox("管理者モード（編集）"):
 # ---------------------------------------------------------
 # メイン画面：在庫一覧
 # ---------------------------------------------------------
-# ジャンルで絞り込み
 if selected_genre == "すべて":
     df_display = df
 else:
     df_display = df[df["ジャンル"] == selected_genre]
 
-# 説明書き
-st.info("""
-以下のルールで色がついています：
-- 🔴 **赤色**: 在庫不足（必要数を下回っている）
-- 🔵 **青色**: 過剰在庫（必要数の2倍以上ある）
-""")
+st.info("在庫の増減は自動的にログに記録され、管理者が「使用量」を集計できます。")
 
-# 色分けルール（highlight_stock_status）を適用して表示
-st.dataframe(df_display.style.apply(highlight_stock_status, axis=1))
+if not df.empty:
+    # 必要な列だけ表示
+    display_cols = ["商品名", "個数", "ジャンル", "必要在庫数", "月間使用量"]
+    # カラムが存在するか確認してから表示
+    valid_cols = [c for c in display_cols if c in df_display.columns]
+    st.dataframe(df_display[valid_cols].style.apply(highlight_stock_status, axis=1))
 
 # ---------------------------------------------------------
-# 入出庫エリア
+# 入出庫エリア（ログ記録機能付き）
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📝 在庫数の更新")
@@ -120,10 +130,20 @@ if not df.empty:
 
         if update_btn:
             try:
+                # 変更前の値を取得
+                old_quantity = df[df["商品名"] == target_name]["個数"].values[0]
+                diff = new_quantity - old_quantity # 変動数（増えたらプラス、減ったらマイナス）
+                
+                # シート更新
                 cell = sheet.find(target_name)
-                # 2列目（個数）を更新
                 sheet.update_cell(cell.row, 2, new_quantity)
-                st.success(f"「{target_name}」を更新しました！")
+                
+                # ★ログに記録（差分がある時だけ）
+                if diff != 0:
+                    action = "入庫" if diff > 0 else "出庫(使用)"
+                    add_log(log_sheet, target_name, diff, action)
+
+                st.success(f"「{target_name}」を更新しました！（{diff}個）")
                 time.sleep(1)
                 st.rerun()
             except Exception as e:
@@ -138,42 +158,79 @@ if is_admin:
     st.markdown("---")
     st.markdown("### 🔧 管理者メニュー")
     
-    tab1, tab2 = st.tabs(["商品の追加", "商品の削除"])
+    tab1, tab2, tab3 = st.tabs(["商品の追加", "商品の削除", "📊 月間使用量の集計"])
 
+    # 【追加機能】
     with tab1:
         with st.form(key='add_form'):
             col_a, col_b = st.columns(2)
-            with col_a:
-                name = st.text_input("商品名")
-            with col_b:
-                genre = st.text_input("ジャンル（例: レジン）")
-            
+            with col_a: name = st.text_input("商品名")
+            with col_b: genre = st.text_input("ジャンル")
             col_c, col_d = st.columns(2)
-            with col_c:
-                quantity = st.number_input("初期在庫数", min_value=0, step=1)
-            with col_d:
-                required = st.number_input("必要在庫数", min_value=0, step=1)
+            with col_c: quantity = st.number_input("初期在庫", min_value=0)
+            with col_d: required = st.number_input("必要在庫", min_value=0)
             
-            submit_btn = st.form_submit_button("追加する")
-            
-            if submit_btn:
+            if st.form_submit_button("追加する"):
                 if name and genre:
-                    sheet.append_row([name, quantity, genre, required])
-                    st.success(f"「{name}」を追加しました！")
+                    sheet.append_row([name, quantity, genre, required, 0]) # 月間使用量は0で初期化
+                    st.success(f"追加しました")
                     time.sleep(1)
                     st.rerun()
-                else:
-                    st.warning("商品名とジャンルを入力してください")
 
+    # 【削除機能】
     with tab2:
-        delete_target = st.selectbox("削除する商品を選択", df["商品名"].unique(), key='del_select')
+        delete_target = st.selectbox("削除選択", df["商品名"].unique(), key='del')
         if st.button("削除実行"):
-            try:
-                cell = sheet.find(delete_target)
-                sheet.delete_rows(cell.row)
-                st.success(f"「{delete_target}」を削除しました")
-                time.sleep(1)
-                st.rerun()
-            except Exception as e:
-                st.error(f"削除エラー: {e}")
-                
+            cell = sheet.find(delete_target)
+            sheet.delete_rows(cell.row)
+            st.success("削除しました")
+            time.sleep(1)
+            st.rerun()
+
+    # 【★新機能：月間使用量の計算】
+    with tab3:
+        st.write("履歴（log）シートから、直近30日間の使用量（減った数）を計算して、メインシートに記録します。")
+        
+        if st.button("集計を実行して記録する"):
+            with st.spinner("集計中...少々お待ちください"):
+                try:
+                    # 1. ログを全取得
+                    logs = log_sheet.get_all_records()
+                    log_df = pd.DataFrame(logs)
+                    
+                    # 2. 日付でフィルタリング（直近30日）
+                    log_df["日時"] = pd.to_datetime(log_df["日時"])
+                    cutoff_date = datetime.now() - timedelta(days=30)
+                    recent_logs = log_df[log_df["日時"] >= cutoff_date]
+                    
+                    # 3. 商品ごとに「マイナスの変動（使用）」だけを合計
+                    # 変動数がマイナスのものだけ抽出して、絶対値にする
+                    usage_df = recent_logs[recent_logs["変動数"] < 0].copy()
+                    usage_df["使用数"] = usage_df["変動数"].abs() # マイナスをプラスに変換
+                    
+                    # 集計：商品名ごとの合計
+                    summary = usage_df.groupby("商品名")["使用数"].sum()
+                    
+                    # 4. メインシートに書き込み
+                    # 行ごとにチェックして書き込む（少し時間がかかります）
+                    cell_list = []
+                    # 商品名の一覧を取得
+                    items = sheet.col_values(1)[1:] # 1行目は見出しなので飛ばす
+                    
+                    for i, item_name in enumerate(items):
+                        row_num = i + 2 # スプレッドシートの行番号（2行目から開始）
+                        usage_amount = 0
+                        
+                        if item_name in summary:
+                            usage_amount = int(summary[item_name])
+                        
+                        # E列（5列目）を更新
+                        sheet.update_cell(row_num, 5, usage_amount)
+                    
+                    st.success("集計完了！メイン画面の「月間使用量」が更新されました。")
+                    time.sleep(2)
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"集計エラー: {e}")
+                    
