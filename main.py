@@ -63,7 +63,7 @@ def add_log(log_sheet, item_name, change_amount, action_type):
     log_sheet.append_row([now, item_name, change_amount, action_type])
 
 # --- アプリのメイン処理 ---
-st.title("📦 在庫管理アプリ")
+st.title("🦷 CAD/CAM関連在庫管理")
 
 df, sheet, log_sheet = load_data()
 
