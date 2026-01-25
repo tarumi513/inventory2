@@ -19,14 +19,15 @@ def get_gspread_client():
         return None
 
 # --- データの読み込み関数 ---
+# --- データの読み込み関数 ---
 def load_data():
     client = get_gspread_client()
     if not client:
         return pd.DataFrame(), None, None
     try:
-        # "在庫リスト" という名前のシートを開く
-sheet = client.open("inventory_data").worksheet("在庫リスト")
-
+        # ↓ここが修正箇所です（先頭にスペースが必要です！）
+        sheet = client.open("inventory_data").worksheet("在庫リスト")
+        
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         
