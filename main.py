@@ -19,13 +19,12 @@ def get_gspread_client():
         return None
 
 # --- データの読み込み関数 ---
-# --- データの読み込み関数 ---
 def load_data():
     client = get_gspread_client()
     if not client:
         return pd.DataFrame(), None, None
     try:
-        # ↓ここが修正箇所です（先頭にスペースが必要です！）
+        # ★重要：タブ名を指定して開く（名前を変えた場合はここも変える！）
         sheet = client.open("inventory_data").worksheet("在庫リスト")
         
         data = sheet.get_all_records()
@@ -69,18 +68,22 @@ st.title("📦 在庫管理アプリ")
 df, sheet, log_sheet = load_data()
 
 # ---------------------------------------------------------
-# サイドバー設定
+# メイン画面上部：ジャンル切り替え（★ここに移動しました）
 # ---------------------------------------------------------
-st.sidebar.title("メニュー")
+selected_genre = "すべて"
 
-st.sidebar.subheader("🔍 表示切り替え")
 if not df.empty:
     all_genres = ["すべて"] + list(df["ジャンル"].unique())
-    selected_genre = st.sidebar.selectbox("ジャンルを選択", all_genres)
-else:
-    selected_genre = "すべて"
+    
+    # 見栄えを良くするために、少し幅を調整して表示
+    col_filter, col_dummy = st.columns([1, 2]) # 左側に寄せる
+    with col_filter:
+        selected_genre = st.selectbox("📂 ジャンルで絞り込み", all_genres)
 
-st.sidebar.markdown("---")
+# ---------------------------------------------------------
+# サイドバー設定（管理者ログインのみ）
+# ---------------------------------------------------------
+st.sidebar.title("メニュー")
 is_admin = False
 if st.sidebar.checkbox("管理者モード（編集）"):
     password = st.sidebar.text_input("管理者パスワード", type="password")
@@ -93,6 +96,7 @@ if st.sidebar.checkbox("管理者モード（編集）"):
 # ---------------------------------------------------------
 # メイン画面：在庫一覧
 # ---------------------------------------------------------
+# ジャンルで絞り込み
 if selected_genre == "すべて":
     df_display = df
 else:
@@ -102,25 +106,22 @@ if not df.empty:
     display_cols = ["商品名", "個数", "ジャンル", "必要在庫数", "月間使用量"]
     valid_cols = [c for c in display_cols if c in df_display.columns]
     
-    # データフレームを表示（高さ固定をやめて全表示）
     st.dataframe(df_display[valid_cols].style.apply(highlight_stock_status, axis=1))
 
 # ---------------------------------------------------------
-# 入出庫エリア（★ここを大幅に変更しました）
+# 入出庫エリア
 # ---------------------------------------------------------
 st.markdown("---")
 st.subheader("📝 在庫の入出庫")
 
 if not df.empty:
     with st.form(key='update_stock_form'):
-        # 1行目：商品選択
+        # 商品選択（絞り込んだリストから選べるようにする）
         target_name = st.selectbox("商品を選択", df_display["商品名"].unique())
         
-        # 現在の在庫数を取得して表示（確認用）
         current_stock = df[df["商品名"] == target_name]["個数"].values[0]
         st.caption(f"現在の在庫: {current_stock} 個")
 
-        # 2行目：操作選択と数量入力
         col1, col2 = st.columns(2)
         with col1:
             action = st.selectbox("操作", ["出庫 (使う)", "入庫 (補充)", "棚卸し (修正)"])
@@ -131,7 +132,6 @@ if not df.empty:
 
         if update_btn:
             try:
-                # 新しい在庫数を計算
                 new_quantity = current_stock
                 log_amount = 0
                 log_action = ""
@@ -141,7 +141,7 @@ if not df.empty:
                     log_amount = -amount
                     log_action = "出庫"
                     if new_quantity < 0:
-                        st.warning("⚠️ 在庫がマイナスになりますが、そのまま記録します。")
+                        st.warning("⚠️ 在庫がマイナスになります")
                 
                 elif action == "入庫 (補充)":
                     new_quantity = current_stock + amount
@@ -149,20 +149,15 @@ if not df.empty:
                     log_action = "入庫"
 
                 elif action == "棚卸し (修正)":
-                    # 入力された数値をそのまま「正」とする
                     new_quantity = amount
-                    log_amount = new_quantity - current_stock # 差分を記録
+                    log_amount = new_quantity - current_stock
                     log_action = "棚卸修正"
 
-                # 更新処理
                 if log_amount != 0 or action == "棚卸し (修正)":
                     cell = sheet.find(target_name)
                     sheet.update_cell(cell.row, 2, new_quantity)
-                    
-                    # ログ記録
                     add_log(log_sheet, target_name, log_amount, log_action)
-
-                    st.success(f"「{target_name}」を {new_quantity} 個に更新しました！（{log_action}）")
+                    st.success(f"「{target_name}」を更新しました！")
                     time.sleep(1)
                     st.rerun()
                 else:
@@ -208,8 +203,8 @@ if is_admin:
             st.rerun()
 
     with tab3:
-        st.write("履歴（log）シートから、直近30日間の使用量（減った数）を計算して、メインシートに記録します。")
-        if st.button("集計を実行して記録する"):
+        st.write("履歴（log）シートから直近30日の使用量を集計します。")
+        if st.button("集計を実行"):
             with st.spinner("集計中..."):
                 try:
                     logs = log_sheet.get_all_records()
