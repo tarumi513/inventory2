@@ -24,24 +24,19 @@ def load_data():
     if not client:
         return pd.DataFrame(), None, None
     try:
-        # メインシートを開く
         sheet = client.open("inventory_data").sheet1 
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # ログシートを開く（なければエラーになるのでtryで囲む）
         try:
             log_sheet = client.open("inventory_data").worksheet("log")
         except:
-            st.error("スプレッドシートに 'log' という名前のシートを作成してください！")
             return pd.DataFrame(), None, None
 
-        # 列不足の保険
         if "ジャンル" not in df.columns: df["ジャンル"] = "未分類"
         if "必要在庫数" not in df.columns: df["必要在庫数"] = 0
-        if "月間使用量" not in df.columns: df["月間使用量"] = 0 # 新機能
+        if "月間使用量" not in df.columns: df["月間使用量"] = 0
 
-        # 数値変換
         cols = ["個数", "必要在庫数", "月間使用量"]
         for c in cols:
             df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
@@ -62,15 +57,12 @@ def highlight_stock_status(row):
 
 # --- ログ記録関数 ---
 def add_log(log_sheet, item_name, change_amount, action_type):
-    # 日本時間（簡易的）
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # logシートの末尾に追加
     log_sheet.append_row([now, item_name, change_amount, action_type])
 
 # --- アプリのメイン処理 ---
 st.title("📦 在庫管理アプリ")
 
-# データを読み込む（log_sheetも取得）
 df, sheet, log_sheet = load_data()
 
 # ---------------------------------------------------------
@@ -103,49 +95,76 @@ if selected_genre == "すべて":
 else:
     df_display = df[df["ジャンル"] == selected_genre]
 
-st.info("在庫の増減は自動的にログに記録され、管理者が「使用量」を集計できます。")
-
 if not df.empty:
-    # 必要な列だけ表示
     display_cols = ["商品名", "個数", "ジャンル", "必要在庫数", "月間使用量"]
-    # カラムが存在するか確認してから表示
     valid_cols = [c for c in display_cols if c in df_display.columns]
+    
+    # データフレームを表示（高さ固定をやめて全表示）
     st.dataframe(df_display[valid_cols].style.apply(highlight_stock_status, axis=1))
 
 # ---------------------------------------------------------
-# 入出庫エリア（ログ記録機能付き）
+# 入出庫エリア（★ここを大幅に変更しました）
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("📝 在庫数の更新")
+st.subheader("📝 在庫の入出庫")
 
 if not df.empty:
     with st.form(key='update_stock_form'):
+        # 1行目：商品選択
+        target_name = st.selectbox("商品を選択", df_display["商品名"].unique())
+        
+        # 現在の在庫数を取得して表示（確認用）
+        current_stock = df[df["商品名"] == target_name]["個数"].values[0]
+        st.caption(f"現在の在庫: {current_stock} 個")
+
+        # 2行目：操作選択と数量入力
         col1, col2 = st.columns(2)
         with col1:
-            target_name = st.selectbox("商品を選択", df_display["商品名"].unique())
+            action = st.selectbox("操作", ["出庫 (使う)", "入庫 (補充)", "棚卸し (修正)"])
         with col2:
-            new_quantity = st.number_input("現在の在庫数", min_value=0, step=1)
+            amount = st.number_input("数量", min_value=0, step=1, value=1)
 
-        update_btn = st.form_submit_button("在庫数を更新")
+        update_btn = st.form_submit_button("実行")
 
         if update_btn:
             try:
-                # 変更前の値を取得
-                old_quantity = df[df["商品名"] == target_name]["個数"].values[0]
-                diff = new_quantity - old_quantity # 変動数（増えたらプラス、減ったらマイナス）
-                
-                # シート更新
-                cell = sheet.find(target_name)
-                sheet.update_cell(cell.row, 2, new_quantity)
-                
-                # ★ログに記録（差分がある時だけ）
-                if diff != 0:
-                    action = "入庫" if diff > 0 else "出庫(使用)"
-                    add_log(log_sheet, target_name, diff, action)
+                # 新しい在庫数を計算
+                new_quantity = current_stock
+                log_amount = 0
+                log_action = ""
 
-                st.success(f"「{target_name}」を更新しました！（{diff}個）")
-                time.sleep(1)
-                st.rerun()
+                if action == "出庫 (使う)":
+                    new_quantity = current_stock - amount
+                    log_amount = -amount
+                    log_action = "出庫"
+                    if new_quantity < 0:
+                        st.warning("⚠️ 在庫がマイナスになりますが、そのまま記録します。")
+                
+                elif action == "入庫 (補充)":
+                    new_quantity = current_stock + amount
+                    log_amount = amount
+                    log_action = "入庫"
+
+                elif action == "棚卸し (修正)":
+                    # 入力された数値をそのまま「正」とする
+                    new_quantity = amount
+                    log_amount = new_quantity - current_stock # 差分を記録
+                    log_action = "棚卸修正"
+
+                # 更新処理
+                if log_amount != 0 or action == "棚卸し (修正)":
+                    cell = sheet.find(target_name)
+                    sheet.update_cell(cell.row, 2, new_quantity)
+                    
+                    # ログ記録
+                    add_log(log_sheet, target_name, log_amount, log_action)
+
+                    st.success(f"「{target_name}」を {new_quantity} 個に更新しました！（{log_action}）")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.warning("数量が0です。")
+
             except Exception as e:
                 st.error(f"更新エラー: {e}")
 else:
@@ -160,7 +179,6 @@ if is_admin:
     
     tab1, tab2, tab3 = st.tabs(["商品の追加", "商品の削除", "📊 月間使用量の集計"])
 
-    # 【追加機能】
     with tab1:
         with st.form(key='add_form'):
             col_a, col_b = st.columns(2)
@@ -172,12 +190,11 @@ if is_admin:
             
             if st.form_submit_button("追加する"):
                 if name and genre:
-                    sheet.append_row([name, quantity, genre, required, 0]) # 月間使用量は0で初期化
+                    sheet.append_row([name, quantity, genre, required, 0])
                     st.success(f"追加しました")
                     time.sleep(1)
                     st.rerun()
 
-    # 【削除機能】
     with tab2:
         delete_target = st.selectbox("削除選択", df["商品名"].unique(), key='del')
         if st.button("削除実行"):
@@ -187,50 +204,29 @@ if is_admin:
             time.sleep(1)
             st.rerun()
 
-    # 【★新機能：月間使用量の計算】
     with tab3:
         st.write("履歴（log）シートから、直近30日間の使用量（減った数）を計算して、メインシートに記録します。")
-        
         if st.button("集計を実行して記録する"):
-            with st.spinner("集計中...少々お待ちください"):
+            with st.spinner("集計中..."):
                 try:
-                    # 1. ログを全取得
                     logs = log_sheet.get_all_records()
                     log_df = pd.DataFrame(logs)
-                    
-                    # 2. 日付でフィルタリング（直近30日）
                     log_df["日時"] = pd.to_datetime(log_df["日時"])
                     cutoff_date = datetime.now() - timedelta(days=30)
                     recent_logs = log_df[log_df["日時"] >= cutoff_date]
                     
-                    # 3. 商品ごとに「マイナスの変動（使用）」だけを合計
-                    # 変動数がマイナスのものだけ抽出して、絶対値にする
                     usage_df = recent_logs[recent_logs["変動数"] < 0].copy()
-                    usage_df["使用数"] = usage_df["変動数"].abs() # マイナスをプラスに変換
-                    
-                    # 集計：商品名ごとの合計
+                    usage_df["使用数"] = usage_df["変動数"].abs()
                     summary = usage_df.groupby("商品名")["使用数"].sum()
                     
-                    # 4. メインシートに書き込み
-                    # 行ごとにチェックして書き込む（少し時間がかかります）
-                    cell_list = []
-                    # 商品名の一覧を取得
-                    items = sheet.col_values(1)[1:] # 1行目は見出しなので飛ばす
-                    
+                    items = sheet.col_values(1)[1:]
                     for i, item_name in enumerate(items):
-                        row_num = i + 2 # スプレッドシートの行番号（2行目から開始）
-                        usage_amount = 0
-                        
-                        if item_name in summary:
-                            usage_amount = int(summary[item_name])
-                        
-                        # E列（5列目）を更新
+                        row_num = i + 2
+                        usage_amount = int(summary[item_name]) if item_name in summary else 0
                         sheet.update_cell(row_num, 5, usage_amount)
                     
-                    st.success("集計完了！メイン画面の「月間使用量」が更新されました。")
+                    st.success("集計完了！")
                     time.sleep(2)
                     st.rerun()
-                    
                 except Exception as e:
                     st.error(f"集計エラー: {e}")
-                    
