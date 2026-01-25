@@ -24,7 +24,9 @@ def load_data():
     if not client:
         return pd.DataFrame(), None, None
     try:
-        sheet = client.open("inventory_data").sheet1 
+        # "在庫リスト" という名前のシートを開く
+sheet = client.open("inventory_data").worksheet("在庫リスト")
+
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         
